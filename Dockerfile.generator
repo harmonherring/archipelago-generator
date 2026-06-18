@@ -1,0 +1,38 @@
+# Archipelago generator image: AP 0.6.7 frozen build + common apworlds.
+# Runs ArchipelagoGenerate headlessly against a mounted /job dir.
+FROM debian:bookworm-slim
+
+ARG AP_VERSION=0.6.7
+ENV AP_HOME=/opt/archipelago
+
+# ca-certificates + curl to fetch the release; the rest are runtime shared
+# libraries the frozen build links against even for headless generation.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        libffi8 \
+        libssl3 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Fetch and unpack the official linux-x86_64 tarball (bundles its own Python).
+RUN curl -fsSL -o /tmp/ap.tar.gz \
+        "https://github.com/ArchipelagoMW/Archipelago/releases/download/${AP_VERSION}/Archipelago_${AP_VERSION}_linux-x86_64.tar.gz" \
+    && mkdir -p "${AP_HOME}" \
+    && tar -xzf /tmp/ap.tar.gz -C "${AP_HOME}" --strip-components=1 \
+    && rm /tmp/ap.tar.gz
+
+# Bake common third-party apworlds into the install's custom_worlds dir.
+COPY apworlds/ ${AP_HOME}/custom_worlds/
+
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
+# Non-root. The whole install must be writable by the runtime user: Archipelago only
+# treats the install as "portable" (and thus scans custom_worlds/ for apworlds) when
+# os.access(local_path, W_OK) is true. A read-only install makes it look for apworlds in
+# the user's home dir instead, so baked-in custom_worlds would be ignored.
+RUN useradd --create-home --uid 1000 archipelago \
+    && chown -R archipelago:archipelago "${AP_HOME}"
+USER archipelago
+
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

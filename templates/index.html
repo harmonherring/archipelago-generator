@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Archipelago Generator</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 640px; margin: 3rem auto; padding: 0 1rem; }
+    label { display: block; margin: 1rem 0 0.25rem; font-weight: 600; }
+    .hint { font-weight: 400; color: #666; font-size: 0.85rem; }
+    button { margin-top: 1.5rem; padding: 0.6rem 1.2rem; font-size: 1rem; cursor: pointer; }
+    button:disabled { cursor: default; opacity: 0.6; }
+    #status { margin-top: 1.5rem; }
+    pre { background: #f4f4f4; padding: 1rem; overflow: auto; white-space: pre-wrap; }
+    a.download { display: inline-block; margin-top: 1rem; font-size: 1.1rem; }
+  </style>
+</head>
+<body>
+  <h1>Archipelago Generator</h1>
+  <p>Upload your player YAML config(s). Add any third-party <code>.apworld</code> files
+     your games need that aren't already bundled.</p>
+
+  <form id="form">
+    <label>Player YAML config(s) <span class="hint">required &middot; .yaml / .yml</span>
+      <input type="file" name="yamls" accept=".yaml,.yml" multiple required>
+    </label>
+    <label>Custom .apworld file(s) <span class="hint">optional</span>
+      <input type="file" name="apworlds" accept=".apworld" multiple>
+    </label>
+    <button type="submit">Generate</button>
+  </form>
+
+  <div id="status"></div>
+
+  <script>
+    const form = document.getElementById("form");
+    const statusEl = document.getElementById("status");
+    const button = form.querySelector("button");
+    let poll;
+
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      clearInterval(poll);
+      button.disabled = true;
+      statusEl.innerHTML = "Uploading…";
+
+      const res = await fetch("/generate", { method: "POST", body: new FormData(form) });
+      const data = await res.json();
+      if (!res.ok) {
+        statusEl.innerHTML = "";
+        showError(data.error || "Upload failed.");
+        button.disabled = false;
+        return;
+      }
+      statusEl.innerHTML = "Queued… generation can take a minute.";
+      poll = setInterval(() => check(data.id), 1500);
+    });
+
+    async function check(id) {
+      const res = await fetch(`/job/${id}`);
+      if (!res.ok) return;
+      const job = await res.json();
+      if (job.status === "queued" || job.status === "running") {
+        statusEl.textContent = job.status === "running" ? "Generating…" : "Queued…";
+        return;
+      }
+      clearInterval(poll);
+      button.disabled = false;
+      if (job.status === "done") {
+        statusEl.innerHTML =
+          `<p>Done.</p><a class="download" href="${job.download}">Download multiworld (.zip)</a>`;
+      } else {
+        showError(job.error || "Generation failed.");
+      }
+    }
+
+    function showError(msg) {
+      statusEl.innerHTML = "<p>Generation failed:</p>";
+      const pre = document.createElement("pre");
+      pre.textContent = msg;
+      statusEl.appendChild(pre);
+    }
+  </script>
+</body>
+</html>

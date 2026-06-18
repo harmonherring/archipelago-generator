@@ -1,0 +1,31 @@
+services:
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    image: archipelago-web:latest
+    ports:
+      - "5000:5000"
+    environment:
+      AP_IMAGE: archipelago-generator:0.6.7
+      AP_JOBS_DIR: /srv/ap-jobs
+      AP_MAX_WORKERS: "2"
+      AP_JOB_TTL: "3600"
+    volumes:
+      # Lets the app launch sibling generator containers on the host's Docker daemon.
+      - /var/run/docker.sock:/var/run/docker.sock
+      # The job dir is bind-mounted at the SAME absolute path here and on the host,
+      # because the path the app gives the daemon for the generator's mount is
+      # resolved on the host. Host and container path must match exactly.
+      - /srv/ap-jobs:/srv/ap-jobs
+    restart: unless-stopped
+
+  # Build-only service: produces the image the web app runs per job. It never runs as
+  # a long-lived service. Build it with:
+  #   docker compose --profile build build generator
+  generator:
+    build:
+      context: .
+      dockerfile: Dockerfile.generator
+    image: archipelago-generator:0.6.7
+    profiles: ["build"]
