@@ -1,0 +1,6 @@
+.git
+__pycache__
+*.pyc
+jobs
+plan.md
+archipelago.md
