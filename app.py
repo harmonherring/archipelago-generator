@@ -1,12 +1,14 @@
-"""Flask front-end: upload YAMLs (+ apworlds), generate a multiworld, download the result.
+"""Flask front-end: open a shareable room, upload YAMLs (+ apworlds) into it from any number
+of browsers, generate a multiworld, download the result.
 
-Job state lives entirely on disk under JOBS_ROOT/<id>/ -- there is no in-memory store, so
+Room/job state lives entirely on disk under JOBS_ROOT/<id>/ -- there is no in-memory store, so
 state survives restarts and works across multiple worker processes. Status is derived from
-the job dir's contents:
+the room dir's contents:
 
-    error.txt present       -> error   (file holds the message + container logs)
-    output/AP_*.zip present -> done
-    otherwise               -> running
+    error.txt present          -> error    (file holds the message + container logs)
+    output/AP_*.zip present    -> done
+    generating.marker present  -> running
+    otherwise                  -> open      (still accepting uploads)
 """
 import glob
 import os
@@ -18,7 +20,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from flask import Flask, abort, jsonify, render_template, request, send_from_directory
+from flask import Flask, abort, jsonify, redirect, render_template, request, send_from_directory, url_for
 from werkzeug.utils import secure_filename
 
 from generator import GenerationError, run_generation
@@ -33,6 +35,7 @@ app.config["MAX_CONTENT_LENGTH"] = int(os.environ.get("AP_MAX_UPLOAD", str(25 * 
 JOBS_ROOT.mkdir(parents=True, exist_ok=True)
 _executor = ThreadPoolExecutor(max_workers=MAX_WORKERS)
 _ID_RE = re.compile(r"^[0-9a-f]{32}$")
+_PREFIX_RE = re.compile(r"^[0-9a-f]{8}_")
 
 
 def _job_dir(job_id: str) -> Path:
@@ -58,7 +61,40 @@ def _status(job_dir: Path):
     zip_name = _output_zip(job_dir)
     if zip_name:
         return "done", zip_name
-    return "running", None
+    if (job_dir / "generating.marker").exists():
+        return "running", None
+    return "open", None
+
+
+def _create_room_dirs(job_dir: Path):
+    players, customs, output = job_dir / "Players", job_dir / "custom_worlds", job_dir / "output"
+    for d in (players, customs, output):
+        d.mkdir(parents=True, exist_ok=True)
+    # The container runs as a non-root user and writes into output/, so the job
+    # tree must be writable regardless of which uid owns it.
+    for d in (job_dir, players, customs, output):
+        os.chmod(d, 0o777)
+
+
+def _save_unique(f, dest_dir: Path, default_name: str, lower: bool = False) -> str:
+    """Save an upload under a collision-proof name; multiple uploaders may pick the same
+    filename, and Archipelago reads the player name from YAML content, not the filename."""
+    name = secure_filename(f.filename) or default_name
+    if lower:
+        name = name.lower()
+    unique_name = f"{uuid.uuid4().hex[:8]}_{name}"
+    f.save(dest_dir / unique_name)
+    return unique_name
+
+
+def _display_name(name: str) -> str:
+    return _PREFIX_RE.sub("", name)
+
+
+def _list_uploads(job_dir: Path):
+    yamls = sorted(_display_name(p.name) for p in (job_dir / "Players").glob("*"))
+    apworlds = sorted(_display_name(p.name) for p in (job_dir / "custom_worlds").glob("*"))
+    return yamls, apworlds
 
 
 def _run(job_dir: Path):
@@ -79,57 +115,78 @@ def _write_error(job_dir: Path, message: str):
 
 @app.route("/")
 def index():
-    return render_template("index.html")
+    """Visiting the site creates a fresh room and redirects there -- the room URL is what
+    gets shared with friends."""
+    room_id = uuid.uuid4().hex
+    _create_room_dirs(JOBS_ROOT / room_id)
+    return redirect(url_for("room_page", room_id=room_id), code=303)
 
 
-@app.route("/generate", methods=["POST"])
-def generate():
-    yamls = [f for f in request.files.getlist("yamls") if f.filename]
-    apworlds = [f for f in request.files.getlist("apworlds") if f.filename]
-    if not yamls:
-        return jsonify(error="At least one YAML config is required."), 400
-
-    job_id = uuid.uuid4().hex
-    job_dir = JOBS_ROOT / job_id
-    players, customs, output = job_dir / "Players", job_dir / "custom_worlds", job_dir / "output"
-    for d in (players, customs, output):
-        d.mkdir(parents=True, exist_ok=True)
-    # The container runs as a non-root user and writes into output/, so the job
-    # tree must be writable regardless of which uid owns it.
-    for d in (job_dir, players, customs, output):
-        os.chmod(d, 0o777)
-
-    for f in yamls:
-        name = secure_filename(f.filename) or "config.yaml"
-        if not name.lower().endswith((".yaml", ".yml")):
-            name += ".yaml"
-        f.save(players / name)
-
-    for f in apworlds:
-        # apworld filenames must be lowercase or the frozen import breaks.
-        name = secure_filename(f.filename).lower()
-        if name.endswith(".apworld"):
-            f.save(customs / name)
-
-    _executor.submit(_run, job_dir)
-    return jsonify(id=job_id), 202
+@app.route("/rooms/<room_id>")
+def room_page(room_id):
+    _job_dir(room_id)  # 404s on bad/missing id
+    return render_template("room.html", room_id=room_id)
 
 
-@app.route("/job/<job_id>")
-def job_status(job_id):
-    job_dir = _job_dir(job_id)
+@app.route("/rooms/<room_id>/state")
+def room_state(room_id):
+    job_dir = _job_dir(room_id)
     status, detail = _status(job_dir)
-    resp = {"id": job_id, "status": status}
+    yamls, apworlds = _list_uploads(job_dir)
+    resp = {"id": room_id, "status": status, "yamls": yamls, "apworlds": apworlds}
     if status == "done":
-        resp["download"] = f"/job/{job_id}/download"
+        resp["download"] = f"/rooms/{room_id}/download"
     elif status == "error":
         resp["error"] = detail
     return jsonify(resp)
 
 
-@app.route("/job/<job_id>/download")
-def job_download(job_id):
-    job_dir = _job_dir(job_id)
+@app.route("/rooms/<room_id>/uploads", methods=["POST"])
+def room_uploads(room_id):
+    job_dir = _job_dir(room_id)
+    if _status(job_dir)[0] != "open":
+        return jsonify(error="This room is no longer accepting uploads."), 409
+
+    yamls = [f for f in request.files.getlist("yamls") if f.filename]
+    apworlds = [f for f in request.files.getlist("apworlds") if f.filename]
+    if not yamls and not apworlds:
+        return jsonify(error="No files were uploaded."), 400
+
+    for f in yamls:
+        base = secure_filename(f.filename) or "config.yaml"
+        if not base.lower().endswith((".yaml", ".yml")):
+            base += ".yaml"
+        _save_unique(f, job_dir / "Players", base)
+
+    for f in apworlds:
+        # apworld filenames must be lowercase or the frozen import breaks.
+        if secure_filename(f.filename).lower().endswith(".apworld"):
+            _save_unique(f, job_dir / "custom_worlds", "custom.apworld", lower=True)
+
+    yamls_now, apworlds_now = _list_uploads(job_dir)
+    return jsonify(status="open", yamls=yamls_now, apworlds=apworlds_now), 201
+
+
+@app.route("/rooms/<room_id>/generate", methods=["POST"])
+def room_generate(room_id):
+    job_dir = _job_dir(room_id)
+    marker = job_dir / "generating.marker"
+    try:
+        marker.touch(exist_ok=False)  # atomic O_EXCL create -- doubles as the start lock
+    except FileExistsError:
+        return jsonify(error="Generation already started."), 409
+
+    if not any((job_dir / "Players").iterdir()):
+        marker.unlink(missing_ok=True)
+        return jsonify(error="At least one YAML config is required."), 400
+
+    _executor.submit(_run, job_dir)
+    return jsonify(status="running"), 202
+
+
+@app.route("/rooms/<room_id>/download")
+def room_download(room_id):
+    job_dir = _job_dir(room_id)
     zip_name = _output_zip(job_dir)
     if not zip_name:
         abort(404)

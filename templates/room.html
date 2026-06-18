@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Archipelago Generator — Room</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 640px; margin: 3rem auto; padding: 0 1rem; }
+    label { display: block; margin: 1rem 0 0.25rem; font-weight: 600; }
+    .hint { font-weight: 400; color: #666; font-size: 0.85rem; }
+    button { margin-top: 1rem; padding: 0.6rem 1.2rem; font-size: 1rem; cursor: pointer; }
+    button:disabled { cursor: default; opacity: 0.6; }
+    #status { margin-top: 1.5rem; }
+    pre { background: #f4f4f4; padding: 1rem; overflow: auto; white-space: pre-wrap; }
+    a.download { display: inline-block; margin-top: 1rem; font-size: 1.1rem; }
+    .link-row { display: flex; gap: 0.5rem; }
+    .link-row input { flex: 1; padding: 0.4rem; font-size: 0.9rem; }
+    ul#yamlList, ul#apworldList { margin: 0.25rem 0; padding-left: 1.5rem; }
+    .empty { color: #888; font-style: italic; }
+  </style>
+</head>
+<body>
+  <h1>Archipelago Generator</h1>
+  <p>Share this room's link with your friends. Everyone can upload their player YAML
+     (and any third-party <code>.apworld</code> files their games need); once everyone's
+     in, click Generate to produce one multiworld for the group.</p>
+
+  <label>Room link
+    <div class="link-row">
+      <input id="roomLink" type="text" readonly>
+      <button id="copyBtn" type="button">Copy</button>
+    </div>
+  </label>
+
+  <form id="uploadForm">
+    <label>Player YAML config(s) <span class="hint">.yaml / .yml</span>
+      <input type="file" name="yamls" accept=".yaml,.yml" multiple>
+    </label>
+    <label>Custom .apworld file(s) <span class="hint">optional</span>
+      <input type="file" name="apworlds" accept=".apworld" multiple>
+    </label>
+    <button id="uploadBtn" type="submit">Upload</button>
+  </form>
+
+  <label>Player YAMLs uploaded so far</label>
+  <ul id="yamlList"></ul>
+  <label>Custom apworlds uploaded so far</label>
+  <ul id="apworldList"></ul>
+
+  <button id="generateBtn" type="button">Generate</button>
+
+  <div id="status"></div>
+
+  <script>
+    const roomId = {{ room_id | tojson }};
+    const uploadForm = document.getElementById("uploadForm");
+    const uploadBtn = document.getElementById("uploadBtn");
+    const generateBtn = document.getElementById("generateBtn");
+    const statusEl = document.getElementById("status");
+    const yamlList = document.getElementById("yamlList");
+    const apworldList = document.getElementById("apworldList");
+    const roomLink = document.getElementById("roomLink");
+    const copyBtn = document.getElementById("copyBtn");
+
+    roomLink.value = window.location.href;
+    copyBtn.addEventListener("click", () => {
+      navigator.clipboard.writeText(roomLink.value);
+      copyBtn.textContent = "Copied!";
+      setTimeout(() => (copyBtn.textContent = "Copy"), 1500);
+    });
+
+    function renderList(el, names) {
+      el.innerHTML = "";
+      if (!names.length) {
+        const li = document.createElement("li");
+        li.className = "empty";
+        li.textContent = "none yet";
+        el.appendChild(li);
+        return;
+      }
+      for (const name of names) {
+        const li = document.createElement("li");
+        li.textContent = name;
+        el.appendChild(li);
+      }
+    }
+
+    function showError(msg) {
+      statusEl.innerHTML = "<p>Generation failed:</p>";
+      const pre = document.createElement("pre");
+      pre.textContent = msg;
+      statusEl.appendChild(pre);
+    }
+
+    function setOpenControlsEnabled(enabled) {
+      uploadBtn.disabled = !enabled;
+      for (const input of uploadForm.querySelectorAll("input")) input.disabled = !enabled;
+    }
+
+    let poll;
+
+    async function check() {
+      const res = await fetch(`/rooms/${roomId}/state`);
+      if (!res.ok) return;
+      const room = await res.json();
+      renderList(yamlList, room.yamls);
+      renderList(apworldList, room.apworlds);
+
+      if (room.status === "open") {
+        setOpenControlsEnabled(true);
+        generateBtn.disabled = room.yamls.length === 0;
+        generateBtn.style.display = "";
+        statusEl.textContent = "";
+      } else if (room.status === "running") {
+        setOpenControlsEnabled(false);
+        generateBtn.disabled = true;
+        statusEl.textContent = "Generating… this can take a minute.";
+      } else if (room.status === "done") {
+        clearInterval(poll);
+        setOpenControlsEnabled(false);
+        generateBtn.style.display = "none";
+        statusEl.innerHTML =
+          `<p>Done.</p><a class="download" href="${room.download}">Download multiworld (.zip)</a>`;
+      } else if (room.status === "error") {
+        clearInterval(poll);
+        setOpenControlsEnabled(false);
+        generateBtn.style.display = "none";
+        showError(room.error || "Generation failed.");
+      }
+    }
+
+    uploadForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      uploadBtn.disabled = true;
+      const res = await fetch(`/rooms/${roomId}/uploads`, { method: "POST", body: new FormData(uploadForm) });
+      const data = await res.json();
+      if (!res.ok) {
+        statusEl.innerHTML = "";
+        showError(data.error || "Upload failed.");
+      } else {
+        uploadForm.reset();
+      }
+      uploadBtn.disabled = false;
+      check();
+    });
+
+    generateBtn.addEventListener("click", async () => {
+      generateBtn.disabled = true;
+      const res = await fetch(`/rooms/${roomId}/generate`, { method: "POST" });
+      const data = await res.json();
+      if (!res.ok && res.status !== 409) {
+        showError(data.error || "Could not start generation.");
+        generateBtn.disabled = false;
+        return;
+      }
+      // 409 means someone else already started it -- fine, just keep polling.
+      check();
+    });
+
+    poll = setInterval(check, 1500);
+    check();
+  </script>
+</body>
+</html>
