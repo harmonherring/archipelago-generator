@@ -1,0 +1,36 @@
+# systemd *user* service for the Flask web front-end.
+#
+# Install as the unprivileged `archi` user (NOT system-wide):
+#   mkdir -p ~/.config/systemd/user
+#   cp deploy/archi-web.service ~/.config/systemd/user/
+#   # replace <uid> below with the output of `id -u`
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now archi-web
+#
+# Requires lingering so it runs without an active login:
+#   sudo loginctl enable-linger archi
+#
+# Talks to the rootless Podman API socket via DOCKER_HOST; the docker SDK in
+# generator.py honors that env var, so no code change is needed for connectivity.
+
+[Unit]
+Description=Archipelago generator web front-end
+After=podman.socket
+Wants=podman.socket
+
+[Service]
+WorkingDirectory=%h/archipelago-generator
+Environment=DOCKER_HOST=unix:///run/user/%U/podman/podman.sock
+Environment=AP_IMAGE=archipelago-generator:0.6.7
+Environment=AP_JOBS_DIR=%h/ap-jobs
+Environment=AP_MAX_WORKERS=2
+Environment=AP_JOB_TTL=3600
+# Host has ~3.8 GB RAM; cap each job so two concurrent generations + the OS fit.
+Environment=AP_MEM_LIMIT=1536m
+ExecStart=%h/archipelago-generator/.venv/bin/gunicorn \
+    --bind 127.0.0.1:5000 --workers 2 --timeout 120 app:app
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

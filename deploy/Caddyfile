@@ -1,0 +1,18 @@
+# Caddy reverse proxy: automatic Let's Encrypt TLS, proxies to the host-local gunicorn.
+#
+# Install Caddy as a SYSTEM service (it needs :80/:443):
+#   sudo apt-get install -y caddy        # or the official Caddy repo
+#   sudo cp deploy/Caddyfile /etc/caddy/Caddyfile
+#   # edit the hostname below, then:
+#   sudo systemctl reload caddy
+#
+# Certs provision automatically once the subdomain's A record resolves to this host.
+# This is the only component that runs as root; it never touches Podman.
+
+apworlds.gg {
+    reverse_proxy 127.0.0.1:5000
+}
+
+www.apworlds.gg {
+    redir https://apworlds.gg{uri}
+}

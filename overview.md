@@ -83,6 +83,16 @@ Note: after changing baked-in apworlds or the generator Dockerfile, rebuild the
 generator explicitly — `docker compose up --build` only rebuilds `web`, not the
 profiled `generator` service.
 
+### Production deployment
+
+The compose path above (web container + mounted **root** Docker socket) is for local dev.
+**Production runs the web app directly on the host** under gunicorn + a systemd user
+service, and spawns generator containers via **rootless Podman** — so the runtime is an
+unprivileged user, not root, removing the "socket = root" exposure. The generator run also
+drops all capabilities and sets `no-new-privileges` (`generator.py`). See
+[deploy/README.md](./deploy/README.md) for the full Hetzner runbook; the Flask code is
+unchanged because `docker.from_env()` honors `DOCKER_HOST` pointed at the Podman socket.
+
 ## Configuration (env vars on the `web` service)
 
 | Var | Default | Purpose |

@@ -37,6 +37,11 @@ def run_generation(job_dir):
         network_disabled=True,
         mem_limit=MEM_LIMIT,
         nano_cpus=int(CPUS * 1_000_000_000),
+        # Defense-in-depth on top of the rootless runtime: a generation runs untrusted
+        # apworld Python, so drop all capabilities and forbid privilege escalation. The
+        # generator never needs either; this raises the bar on a sandbox escape.
+        cap_drop=["ALL"],
+        security_opt=["no-new-privileges"],
         volumes={os.path.abspath(job_dir): {"bind": "/job", "mode": "rw"}},
     )
     try:
