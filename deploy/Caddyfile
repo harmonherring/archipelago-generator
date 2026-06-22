@@ -13,6 +13,7 @@ apworlds.gg {
     reverse_proxy 127.0.0.1:5000
 }
 
-www.apworlds.gg {
-    redir https://apworlds.gg{uri}
-}
+# To enable www -> apex, first create a `www` DNS record in Cloudflare, then add:
+#   www.apworlds.gg {
+#       redir https://apworlds.gg{uri}
+#   }
