@@ -1,0 +1,96 @@
+#cloud-config
+# Hetzner Cloud user-data to provision apworlds.gg from a fresh Ubuntu image.
+# Paste this into the "Cloud config" / user-data field when creating the server.
+# It reproduces deploy/README.md + setup.md: web app on the host (systemd user service)
+# + per-job rootless Podman containers + Caddy TLS.
+#
+# PREREQS / NOTES:
+#  - Add your SSH key to the server at creation (Hetzner injects it into the default user);
+#    this script copies it to the `archi` user.
+#  - The repo is cloned over HTTPS, so it must be public. For a private repo, replace the
+#    clone URL below with a token form: https://<PAT>@github.com/<owner>/<repo>.git
+#  - Point apworlds.gg DNS at the new server IP. Until it resolves, Caddy serves but the
+#    Let's Encrypt cert won't issue — it retries automatically once DNS is correct.
+#  - First boot takes several minutes (it builds the ~740 MB generator image).
+#  - Watch progress: `tail -f /var/log/cloud-init-output.log`
+
+package_update: true
+packages:
+  - ca-certificates
+  - curl
+  - gnupg
+  - podman
+  - uidmap
+  - slirp4netns
+  - fuse-overlayfs
+  - python3-venv
+  - git
+  - ufw
+
+write_files:
+  - path: /usr/local/sbin/ap-deploy.sh
+    permissions: '0755'
+    content: |
+      #!/usr/bin/env bash
+      set -euxo pipefail
+
+      REPO_URL="https://github.com/harmonherring/archipelago-generator.git"
+
+      wait_apt() {  # avoid racing cloud-init's own apt / unattended-upgrades
+        while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do sleep 3; done
+      }
+
+      # --- Caddy official apt repo + install ---
+      install -m 0755 -d /usr/share/keyrings
+      curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' \
+        | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+      curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' \
+        > /etc/apt/sources.list.d/caddy-stable.list
+      wait_apt; apt-get update
+      wait_apt; apt-get install -y caddy
+
+      # --- firewall (allow SSH first) ---
+      ufw allow 22/tcp
+      ufw allow 80/tcp
+      ufw allow 443/tcp
+      ufw --force enable
+
+      # --- unprivileged runtime user for rootless Podman ---
+      id archi &>/dev/null || adduser --disabled-password --gecos "" archi
+      loginctl enable-linger archi
+      grep -q '^archi:' /etc/subuid || usermod --add-subuids 100000-165535 archi
+      grep -q '^archi:' /etc/subgid || usermod --add-subgids 100000-165535 archi
+
+      # give archi the SSH key cloud-init installed on the default/root user
+      for src in /root/.ssh/authorized_keys /home/*/.ssh/authorized_keys; do
+        [ -f "$src" ] || continue
+        install -d -m700 -o archi -g archi /home/archi/.ssh
+        install -m600 -o archi -g archi "$src" /home/archi/.ssh/authorized_keys
+        break
+      done
+
+      # wait for archi's user-systemd runtime dir (linger spins it up)
+      until [ -d "/run/user/$(id -u archi)" ]; do sleep 1; done
+
+      # --- deploy the app as archi (rootless) ---
+      runuser -l archi -c "
+        set -euxo pipefail
+        export XDG_RUNTIME_DIR=/run/user/\$(id -u)
+        systemctl --user enable --now podman.socket
+        [ -d ~/archipelago-generator/.git ] || git clone '$REPO_URL' ~/archipelago-generator
+        cd ~/archipelago-generator
+        podman build -f Dockerfile.generator -t archipelago-generator:0.6.7 .
+        python3 -m venv .venv
+        .venv/bin/pip install -r requirements.txt
+        mkdir -p ~/ap-jobs ~/.config/systemd/user
+        cp deploy/archi-web.service ~/.config/systemd/user/
+        systemctl --user daemon-reload
+        systemctl --user enable --now archi-web
+      "
+
+      # --- TLS / reverse proxy ---
+      cp /home/archi/archipelago-generator/deploy/Caddyfile /etc/caddy/Caddyfile
+      systemctl reload caddy || systemctl restart caddy
+
+runcmd:
+  - [ bash, /usr/local/sbin/ap-deploy.sh ]
