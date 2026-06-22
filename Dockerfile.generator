@@ -15,13 +15,16 @@ FROM debian:bookworm-slim
 ARG AP_VERSION=0.6.7
 ENV AP_HOME=/opt/archipelago
 
-# ca-certificates + curl to fetch the release; the rest are runtime shared
-# libraries the frozen build links against even for headless generation.
+# ca-certificates + curl to fetch the release; libffi8/libssl3 are runtime shared
+# libraries the frozen build links against; python3 + python3-yaml drive the per-job
+# apworld selection in the entrypoint (see select_apworlds.py).
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
         curl \
         libffi8 \
         libssl3 \
+        python3 \
+        python3-yaml \
     && rm -rf /var/lib/apt/lists/*
 
 # Fetch and unpack the official linux-x86_64 tarball (bundles its own Python).
@@ -31,10 +34,14 @@ RUN curl -fsSL -o /tmp/ap.tar.gz \
     && tar -xzf /tmp/ap.tar.gz -C "${AP_HOME}" --strip-components=1 \
     && rm /tmp/ap.tar.gz
 
-# Bake the manifest-fetched apworlds (from stage 1) into the install's custom_worlds dir.
-COPY --from=apworlds /out/ ${AP_HOME}/custom_worlds/
+# Stage the manifest-fetched apworlds (from stage 1) as a LIBRARY, not in custom_worlds:
+# the entrypoint copies only the ones each job's YAMLs reference, so AP doesn't import all
+# ~460 worlds on every generation. index.json (game -> file) rides along in /out.
+ENV AP_LIBRARY=/opt/apworlds-library
+COPY --from=apworlds /out/ ${AP_LIBRARY}/
 
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+COPY scripts/select_apworlds.py /usr/local/bin/select_apworlds.py
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
 # Non-root. The whole install must be writable by the runtime user: Archipelago only
