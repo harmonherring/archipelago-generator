@@ -1,5 +1,15 @@
 # Archipelago generator image: AP 0.6.7 frozen build + common apworlds.
 # Runs ArchipelagoGenerate headlessly against a mounted /job dir.
+
+# Stage 1: download the apworlds listed in apworlds.csv into /out (no binaries vendored
+# in the repo). Kept separate so Python/fetch tooling never lands in the runtime image.
+FROM python:3.12-slim AS apworlds
+WORKDIR /fetch
+COPY apworlds.csv ./
+COPY scripts/fetch_apworlds.py ./
+RUN python3 fetch_apworlds.py --manifest apworlds.csv --dest /out
+
+# Stage 2: the runtime image.
 FROM debian:bookworm-slim
 
 ARG AP_VERSION=0.6.7
@@ -21,8 +31,8 @@ RUN curl -fsSL -o /tmp/ap.tar.gz \
     && tar -xzf /tmp/ap.tar.gz -C "${AP_HOME}" --strip-components=1 \
     && rm /tmp/ap.tar.gz
 
-# Bake common third-party apworlds into the install's custom_worlds dir.
-COPY apworlds/ ${AP_HOME}/custom_worlds/
+# Bake the manifest-fetched apworlds (from stage 1) into the install's custom_worlds dir.
+COPY --from=apworlds /out/ ${AP_HOME}/custom_worlds/
 
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh

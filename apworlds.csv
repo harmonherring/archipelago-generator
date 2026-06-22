@@ -1,0 +1,25 @@
+# Apworld manifest — downloaded into the generator image's custom_worlds/ at build time
+# by scripts/fetch_apworlds.py (see Dockerfile.generator). Edit this file to add/remove
+# games; no .apworld binaries are vendored in the repo.
+#
+# Columns: name,url,sha256
+#   name   - human label (the saved filename is taken from the URL, not this)
+#   url    - direct download URL for the .apworld
+#   sha256 - optional; if set, the download must match (use this when pinning)
+#
+# DEFAULT = latest: point url at GitHub's `releases/latest/download/<file>.apworld` so the
+# build always grabs the newest release. Leave sha256 empty.
+#
+# TO PIN (when a new release breaks): swap the url to a specific tag and add its checksum:
+#   foo,https://github.com/owner/repo/releases/download/v1.2.3/foo.apworld,<sha256>
+#
+# Lines starting with # and blank lines are ignored.
+name,url,sha256
+aom,https://github.com/1-800-thewolf/AoM-Archipelago/releases/latest/download/aom.apworld,
+civv,https://github.com/1313e/Civ-V-AP-World/releases/latest/download/civv.apworld,
+dk64,https://github.com/2dos/DK64-Randomizer-Dev/releases/latest/download/dk64.apworld,
+corruobserver,https://github.com/Adrthegamedev/ArchipelagoCorruObserver/releases/latest/download/corruobserver.apworld,
+bfm,https://github.com/AegeusEvander/Brave-Fencer-Musashi-AP-World/releases/latest/download/bfm.apworld,
+rayman2,https://github.com/Aeltumn/Rayman2AP/releases/latest/download/rayman2.apworld,
+tetrisattack,https://github.com/AgStarRay/TetrisAttackAP/releases/latest/download/tetrisattack.apworld,
+psychonauts,https://github.com/Akashortstack/Psychonauts-AP-Integration/releases/latest/download/psychonauts.apworld,
